@@ -461,16 +461,20 @@ pub fn slot_num_to_loc_and_slot_num(mut slot_num: usize) -> FFResult<(ItemLocati
 }
 
 pub fn weighted_rand(weights: &[i32]) -> usize {
-    let sum: i32 = weights.iter().sum();
-    let mut roll = rand::thread_rng().gen_range(0..=sum);
-    for (idx, limit) in weights.iter().enumerate() {
-        if roll < *limit {
-            return idx;
-        } else {
-            roll -= *limit;
-        }
+    assert!(!weights.is_empty(), "weighted draw requires an entry");
+    let total: i64 = weights.iter().map(|w| i64::from((*w).max(0))).sum();
+    if total == 0 {
+        return 0;
     }
-    weights.len() - 1
+    let mut roll = rand::thread_rng().gen_range(0..total);
+    for (index, weight) in weights.iter().enumerate() {
+        let weight = i64::from((*weight).max(0));
+        if roll < weight {
+            return index;
+        }
+        roll -= weight;
+    }
+    unreachable!("weighted draw must select a positive weight")
 }
 
 pub fn rand_range_inclusive<T: SampleUniform + Ord>(min: T, max: T) -> T {
@@ -608,5 +612,18 @@ mod tests {
             get_duration_from_shorthand("1h1d1h").unwrap(),
             make_duration(1, 2, 0, 0)
         );
+    }
+}
+
+#[cfg(test)]
+mod weight_tests {
+    use super::*;
+    #[test]
+    fn zero_weight_entries_never_win() {
+        for _ in 0..1000 {
+            assert_eq!(weighted_rand(&[1, 0]), 0);
+        }
+        assert_eq!(weighted_rand(&[0, 0]), 0);
+        assert_eq!(weighted_rand(&[0, i32::MAX, 0]), 1);
     }
 }
