@@ -315,6 +315,7 @@ struct DropData {
     item_sets: HashMap<i32, ItemSet>,
     item_refs: HashMap<i32, ItemReference>,
     nano_capsules: HashMap<i16, i16>,
+    code_items: HashMap<String, Vec<Item>>,
 }
 
 struct PathData {
@@ -601,6 +602,13 @@ impl TableData {
 
     pub fn get_nano_from_capsule(&self, crate_id: i16) -> Option<i16> {
         self.drop_data.nano_capsules.get(&crate_id).copied()
+    }
+
+    pub fn get_code_items(&self, code: &str) -> Option<&[Item]> {
+        self.drop_data
+            .code_items
+            .get(&code.to_lowercase())
+            .map(Vec::as_slice)
     }
 
     pub fn get_item_from_crate(&self, crate_id: i16, gender: i32) -> FFResult<Item> {
@@ -2178,6 +2186,7 @@ fn load_drop_data() -> Result<DropData, String> {
     const ITEM_SETS_TABLE_KEY: &str = "ItemSets";
     const ITEM_REFERENCES_TABLE_KEY: &str = "ItemReferences";
     const NANO_CAPSULES_TABLE_KEY: &str = "NanoCapsules";
+    const CODE_ITEMS_TABLE_KEY: &str = "CodeItems";
 
     const CRATE_DROP_CHANCES_ID_KEY: &str = "CrateDropChanceID";
     const CRATE_DROP_TYPES_ID_KEY: &str = "CrateDropTypeID";
@@ -2204,6 +2213,48 @@ fn load_drop_data() -> Result<DropData, String> {
             capsules.insert(entry.CrateID, entry.Nano);
         }
         Ok(capsules)
+    }
+
+    fn load_code_items(
+        table: &Map<String, Value>,
+        item_refs: &HashMap<i32, ItemReference>,
+    ) -> Result<HashMap<String, Vec<Item>>, String> {
+        #[derive(Deserialize)]
+        struct CodeItemEntry {
+            Code: String,
+            ItemReferenceIDs: Vec<i32>,
+        }
+
+        let mut code_items = HashMap::new();
+        for (_, v) in table {
+            let entry: CodeItemEntry = serde_json::from_value(v.clone())
+                .map_err(|e| format!("Malformed code item entry: {}", e))?;
+
+            let mut items = Vec::with_capacity(entry.ItemReferenceIDs.len());
+            for item_ref_id in entry.ItemReferenceIDs {
+                let item = item_refs.get(&item_ref_id).and_then(|item_ref| {
+                    let ty: ItemType = (item_ref.Type as i16).try_into().ok()?;
+                    let id = item_ref.ItemID as i16;
+                    (id != 0).then(|| Item::new(ty, id))
+                });
+
+                match item {
+                    Some(item) => items.push(item),
+                    None => log(
+                        Severity::Warning,
+                        &format!(
+                            "Invalid item reference {} for code {}, skipping",
+                            item_ref_id, entry.Code
+                        ),
+                    ),
+                }
+            }
+
+            if !items.is_empty() {
+                code_items.insert(entry.Code.to_lowercase(), items);
+            }
+        }
+        Ok(code_items)
     }
 
     fn load_drop_table<T: DeserializeOwned>(
@@ -2246,6 +2297,14 @@ fn load_drop_data() -> Result<DropData, String> {
         _ => HashMap::new(),
     };
 
+    let item_refs = load_drop_table(item_references_table, ITEM_REFERENCES_ID_KEY)?;
+
+    // only Academy tabledata defines code items
+    let code_items = match drop_root.get(CODE_ITEMS_TABLE_KEY) {
+        Some(Value::Object(table)) => load_code_items(table, &item_refs)?,
+        _ => HashMap::new(),
+    };
+
     Ok(DropData {
         crate_drop_chances: load_drop_table(crate_drop_chances_table, CRATE_DROP_CHANCES_ID_KEY)?,
         crate_drop_types: load_drop_table(crate_drop_types_table, CRATE_DROP_TYPES_ID_KEY)?,
@@ -2259,8 +2318,9 @@ fn load_drop_data() -> Result<DropData, String> {
 
         rarity_weights: load_drop_table(rarity_weights_table, RARITY_WEIGHTS_ID_KEY)?,
         item_sets: load_drop_table(item_sets_table, ITEM_SETS_ID_KEY)?,
-        item_refs: load_drop_table(item_references_table, ITEM_REFERENCES_ID_KEY)?,
+        item_refs,
         nano_capsules,
+        code_items,
     })
 }
 

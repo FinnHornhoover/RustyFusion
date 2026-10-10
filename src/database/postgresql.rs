@@ -834,6 +834,19 @@ impl DbImpl for PostgresDatabase {
         assert_eq!(updated, 1);
         Ok(())
     }
+
+    async fn is_code_redeemed(&self, pc_uid: BigInt, code: &str) -> FFResult<bool> {
+        let client = self.get_client().await?;
+        let rows = Self::query(&client, "is_code_redeemed", &[&pc_uid, &code]).await?;
+        Ok(!rows.is_empty())
+    }
+
+    async fn record_code_redemption(&self, pc_uid: BigInt, code: &str) -> FFResult<()> {
+        let mut client = self.get_client().await?;
+        let updated = Self::exec(&mut client, "record_code_redemption", &[&pc_uid, &code]).await?;
+        assert_eq!(updated, 1);
+        Ok(())
+    }
 }
 
 #[cfg(test)]

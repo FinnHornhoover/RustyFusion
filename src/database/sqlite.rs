@@ -914,6 +914,25 @@ impl DbImpl for SqliteDatabase {
         assert_eq!(updated, 1);
         Ok(())
     }
+
+    async fn is_code_redeemed(&self, pc_uid: BigInt, code: &str) -> FFResult<bool> {
+        let conn = self.pool.get().await?;
+        let code = code.to_string();
+        let rows = conn
+            .interact(move |conn| Self::query(conn, "is_code_redeemed", &[&pc_uid, &code]))
+            .await??;
+        Ok(!rows.is_empty())
+    }
+
+    async fn record_code_redemption(&self, pc_uid: BigInt, code: &str) -> FFResult<()> {
+        let conn = self.pool.get().await?;
+        let code = code.to_string();
+        let updated = conn
+            .interact(move |conn| Self::exec(conn, "record_code_redemption", &[&pc_uid, &code]))
+            .await??;
+        assert_eq!(updated, 1);
+        Ok(())
+    }
 }
 
 #[cfg(test)]

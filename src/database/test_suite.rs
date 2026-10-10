@@ -17,6 +17,7 @@ macro_rules! for_each_db_test {
         $macro!(test_player_appearance);
         $macro!(test_player_selected);
         $macro!(test_player_delete);
+        $macro!(test_code_redemption);
     };
 }
 
@@ -247,4 +248,33 @@ pub async fn test_player_delete<D: DbImpl>(db: &Database<D>) {
 
     let after = db.load_player(acc.id, uid).await.unwrap();
     assert!(after.is_none(), "player should be gone after delete");
+}
+
+pub async fn test_code_redemption<D: DbImpl>(db: &Database<D>) {
+    let acc = db.create_account("radio", "h").await.unwrap();
+    let uid: i64 = 7007;
+    let other_uid: i64 = 7008;
+    db.init_player(acc.id, &make_player(uid, 0)).await.unwrap();
+    db.init_player(acc.id, &make_player(other_uid, 1))
+        .await
+        .unwrap();
+
+    let code = "ffcshnitzelbooms";
+    assert!(!db
+        .is_code_redeemed(uid, code)
+        .await
+        .expect("is_code_redeemed"));
+
+    db.record_code_redemption(uid, code)
+        .await
+        .expect("record_code_redemption");
+    assert!(db.is_code_redeemed(uid, code).await.unwrap());
+
+    // redemptions are per-player and per-code
+    assert!(!db.is_code_redeemed(other_uid, code).await.unwrap());
+    assert!(!db.is_code_redeemed(uid, "ffcnaturalskills").await.unwrap());
+
+    // redemptions are removed along with the player
+    db.delete_player(uid).await.unwrap();
+    assert!(!db.is_code_redeemed(uid, code).await.unwrap());
 }

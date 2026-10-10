@@ -203,6 +203,8 @@ define_db_api! {
     load_player(&self, acc_id: BigInt, pc_uid: BigInt) -> Option<Player>;
     load_players(&self, acc_id: BigInt) -> Vec<Player>;
     delete_player(&self, pc_uid: BigInt) -> ();
+    is_code_redeemed(&self, pc_uid: BigInt, code: &str) -> bool;
+    record_code_redemption(&self, pc_uid: BigInt, code: &str) -> ();
 }
 
 fn format_db_conn_error(parent_error: FFError) -> FFError {
