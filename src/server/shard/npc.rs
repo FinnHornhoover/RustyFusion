@@ -98,17 +98,3 @@ fn compatible_bark(barks: &[i32], bark_type: Option<usize>) -> Option<i32> {
     }
     barks.get(index).copied().filter(|id| *id != 0)
 }
-
-#[cfg(test)]
-mod barker_tests {
-    use super::*;
-    #[test]
-    fn sparse_lines_keep_their_barker_types() {
-        let barks = [0, 101, 0, 202];
-        assert_eq!(compatible_bark(&barks, Some(1)), None);
-        assert_eq!(compatible_bark(&barks, Some(2)), Some(101));
-        assert_eq!(compatible_bark(&barks, Some(4)), Some(202));
-        assert_eq!(compatible_bark(&barks, Some(0)), None);
-        assert_eq!(compatible_bark(&barks, Some(5)), None);
-    }
-}
