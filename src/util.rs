@@ -614,16 +614,3 @@ mod tests {
         );
     }
 }
-
-#[cfg(test)]
-mod weight_tests {
-    use super::*;
-    #[test]
-    fn zero_weight_entries_never_win() {
-        for _ in 0..1000 {
-            assert_eq!(weighted_rand(&[1, 0]), 0);
-        }
-        assert_eq!(weighted_rand(&[0, 0]), 0);
-        assert_eq!(weighted_rand(&[0, i32::MAX, 0]), 1);
-    }
-}

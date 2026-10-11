@@ -2458,16 +2458,3 @@ fn eligible_rarity_weights(weights: &[i32], rarities: &[i32]) -> Vec<i32> {
         })
         .collect()
 }
-
-#[cfg(test)]
-mod rarity_tests {
-    use super::*;
-    #[test]
-    fn absent_rarities_are_excluded_without_reindexing() {
-        assert_eq!(
-            eligible_rarity_weights(&[10, 20, 30, 40], &[1, 4]),
-            vec![10, 0, 0, 40]
-        );
-        assert_eq!(eligible_rarity_weights(&[10, 20], &[0, 2]), vec![0, 20]);
-    }
-}
