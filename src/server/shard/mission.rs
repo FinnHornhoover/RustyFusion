@@ -1,13 +1,16 @@
 use crate::{
     chunk::TickMode,
+    config::config_get,
     defines::{RANGE_INTERACT, RANGE_TRIGGER},
     entity::{Combatant, EntityID},
-    enums::{ItemLocation, ItemType, MissionType, TaskType},
+    enums::{ItemLocation, MissionType, TaskType},
     error::*,
+    helpers,
+    item::RewardItem,
     mission::Task,
     net::{
         packet::{PacketID::*, *},
-        ClientMap, FFClient,
+        ClientMap, FFClient, FFProtocol,
     },
     state::ShardServerState,
     tabledata::tdata_get,
@@ -247,16 +250,14 @@ pub fn task_start(pkt: Packet, client: &FFClient, state: &mut ShardServerState) 
                 let curr_count = player.get_quest_item_count(*qitem_id) as isize;
                 let new_count = (curr_count + *qitem_count_mod) as usize;
                 let qitem_slot = player.set_quest_item_count(*qitem_id, new_count).unwrap();
-                qitem_pkt.push(&sItemReward {
-                    sItem: sItemBase {
-                        iType: ItemType::Quest as i16,
-                        iID: *qitem_id,
-                        iOpt: new_count as i32,
-                        iTimeLimit: unused!(),
+                helpers::push_item_reward(
+                    &mut qitem_pkt,
+                    RewardItem::Quest {
+                        id: *qitem_id,
+                        count: new_count,
+                        slot_num: qitem_slot,
                     },
-                    eIL: ItemLocation::QInven as i32,
-                    iSlotNum: qitem_slot as i32,
-                });
+                );
             }
 
             if let Some(qitem_pkt) = log_if_failed(qitem_pkt.build()) {
@@ -491,16 +492,14 @@ pub fn task_end(pkt: Packet, clients: &ClientMap, state: &mut ShardServerState) 
                 let curr_count = player.get_quest_item_count(*qitem_id) as isize;
                 let new_count = (curr_count + *qitem_count_mod) as usize;
                 let qitem_slot = player.set_quest_item_count(*qitem_id, new_count).unwrap();
-                qitem_pkt.push(&sItemReward {
-                    sItem: sItemBase {
-                        iType: ItemType::Quest as i16,
-                        iID: *qitem_id,
-                        iOpt: new_count as i32,
-                        iTimeLimit: unused!(),
+                helpers::push_item_reward(
+                    &mut qitem_pkt,
+                    RewardItem::Quest {
+                        id: *qitem_id,
+                        count: new_count,
+                        slot_num: qitem_slot,
                     },
-                    eIL: ItemLocation::QInven as i32,
-                    iSlotNum: qitem_slot as i32,
-                });
+                );
             }
 
             if let Some(qitem_pkt) = log_if_failed(qitem_pkt.build()) {
@@ -537,11 +536,13 @@ pub fn task_end(pkt: Packet, clients: &ClientMap, state: &mut ShardServerState) 
                         player
                             .set_item(ItemLocation::Inven, slot_num, Some(item_reward))
                             .unwrap();
-                        reward_pkt.push(&sItemReward {
-                            sItem: Some(item_reward).into_proto(),
-                            eIL: ItemLocation::Inven as i32,
-                            iSlotNum: slot_num as i32,
-                        });
+                        helpers::push_item_reward(
+                            &mut reward_pkt,
+                            RewardItem::Normal {
+                                item: Some(item_reward),
+                                slot_num,
+                            },
+                        );
                     }
 
                     if let Some(reward_pkt) = log_if_failed(reward_pkt.build()) {
@@ -564,6 +565,7 @@ pub fn task_end(pkt: Packet, clients: &ClientMap, state: &mut ShardServerState) 
                 .mission_journal
                 .set_mission_completed(task_def.mission_id)
                 .unwrap();
+
             log(
                 Severity::Info,
                 &format!(
@@ -571,40 +573,55 @@ pub fn task_end(pkt: Packet, clients: &ClientMap, state: &mut ShardServerState) 
                     player, mission_def.mission_name, task_def.mission_id
                 ),
             );
+
             if let Some(nano_id) = task_def.succ_nano_id {
-                let player_stats = tdata_get().get_player_stats(player.get_level()).unwrap();
+                let old_level = player.get_level();
                 match player.unlock_nano(nano_id).cloned() {
                     Ok(nano) => {
-                        player.set_fusion_matter(
-                            player.get_fusion_matter() - player_stats.req_fm_nano_create,
-                        );
-                        let new_level = std::cmp::max(player.get_level(), nano_id);
-                        let resp = sP_FE2CL_REP_PC_NANO_CREATE_SUCC {
-                            iPC_FusionMatter: player.get_fusion_matter() as i32,
-                            iQuestItemSlotNum: -1,
-                            QuestItem: None.into_proto(),
-                            Nano: Some(&nano).into_proto(),
-                            iPC_Level: match player.set_level(new_level) {
-                                Ok(l) => l,
-                                Err(e) => {
-                                    log_error(e);
-                                    player.get_level()
-                                }
-                            },
-                        };
-                        clients
-                            .get_sender()
-                            .send_packet(P_FE2CL_REP_PC_NANO_CREATE_SUCC, &resp);
+                        let level = match config_get().general.protocol.get() {
+                            FFProtocol::v0104 => {
+                                let player_stats = tdata_get().get_player_stats(old_level).unwrap();
 
-                        let bcast = sP_FE2CL_REP_PC_CHANGE_LEVEL {
-                            iPC_ID: pc_id,
-                            iPC_Level: new_level,
+                                // Player is guaranteed to have enough fusion matter to create the nano,
+                                // but if they used commands they may have less. Clamp to 0.
+                                let new_fm = player
+                                    .get_fusion_matter()
+                                    .saturating_sub(player_stats.req_fm_nano_create);
+                                player.set_fusion_matter(new_fm);
+
+                                let new_level = std::cmp::max(old_level, nano_id);
+                                match player.set_level(new_level) {
+                                    Ok(l) => l,
+                                    Err(e) => {
+                                        log_error(e);
+                                        player.get_level()
+                                    }
+                                }
+                            }
+                            FFProtocol::v1013 => old_level,
                         };
-                        state
-                            .entity_map
-                            .for_each_around(EntityID::Player(pc_id), |c| {
-                                c.send_packet(P_FE2CL_REP_PC_CHANGE_LEVEL, &bcast)
-                            });
+
+                        helpers::send_nano_create_succ(
+                            clients.get_sender(),
+                            player.get_fusion_matter(),
+                            None,
+                            None,
+                            Some(&nano),
+                            level,
+                        );
+
+                        if level != old_level {
+                            let bcast = sP_FE2CL_REP_PC_CHANGE_LEVEL {
+                                iPC_ID: pc_id,
+                                iPC_Level: level,
+                            };
+
+                            state
+                                .entity_map
+                                .for_each_around(EntityID::Player(pc_id), |c| {
+                                    c.send_packet(P_FE2CL_REP_PC_CHANGE_LEVEL, &bcast)
+                                });
+                        }
                     }
                     Err(e) => log_error(e),
                 }

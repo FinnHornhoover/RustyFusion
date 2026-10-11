@@ -495,10 +495,13 @@ mod commands {
 
     use crate::{
         chunk::TickMode,
+        config::config_get,
         database::{db_get, DbImpl as _},
         entity::Combatant,
-        enums::CombatantTeam,
+        enums::{CombatantTeam, ItemLocation},
+        net::FFProtocol,
         scripting::scripting_get,
+        tabledata::tdata_get,
     };
 
     use super::*;
@@ -518,7 +521,7 @@ mod commands {
 
     fn init_commands() -> HashMap<&'static str, Command> {
         #[rustfmt::skip]
-        let commands: [(&'static str, &'static str, CommandHandler); 15] = [
+        let commands: [(&'static str, &'static str, CommandHandler); 16] = [
             ("about", "Show information about the server", cmd_about),
             ("ban_a", "Ban an account", cmd_ban),
             ("ban_i", "Ban a player and their account", cmd_ban),
@@ -530,6 +533,7 @@ mod commands {
             ("reload", "Reload all Lua scripts", cmd_reload),
             ("perms", "View or change a player's permissions level", cmd_perms),
             ("ping", "View your current ping to the server", cmd_ping),
+            ("redeem", "Redeem a code item", cmd_redeem),
             ("refresh", "Reinsert the player into the current chunk", cmd_refresh),
             ("registerall", "Register all transportation locations", cmd_registerall),
             ("unregisterall", "Unregister all transportation locations", cmd_unregisterall),
@@ -583,15 +587,16 @@ mod commands {
         clients: &'a ClientMap<'a>,
         _state: &'a mut ShardServerState,
     ) -> Pin<Box<dyn Future<Output = FFResult<()>> + Send + 'a>> {
+        let protocol_version = config_get().general.protocol.get();
         Box::pin(async move {
             send_system_message(
                 clients.get_sender(),
                 &format!(
                     "RustyFusion by ycc\n\
                 Library version: {}\n\
-                Protocol version: {}\n\
+                Protocol version: {:?}\n\
                 Database version: {}",
-                    LIB_VERSION, PROTOCOL_VERSION, DB_VERSION,
+                    LIB_VERSION, protocol_version, DB_VERSION,
                 ),
             )
         })
@@ -1153,6 +1158,82 @@ mod commands {
                     send_system_message(client, "Ping not available")
                 }
             }
+        })
+    }
+
+    fn cmd_redeem<'a>(
+        tokens: Vec<&'a str>,
+        clients: &'a ClientMap<'a>,
+        state: &'a mut ShardServerState,
+    ) -> Pin<Box<dyn Future<Output = FFResult<()>> + Send + 'a>> {
+        Box::pin(async move {
+            let client = clients.get_sender();
+            let Some(code) = tokens.get(1) else {
+                return send_system_message(
+                    client,
+                    &format!("Usage: {}redeem <code>", CUSTOM_COMMAND_PREFIX),
+                );
+            };
+
+            let code = code.to_lowercase();
+            let Some(items) = tdata_get().get_code_items(&code) else {
+                return send_system_message(client, "Unknown code");
+            };
+
+            let pc_id = client.get_player_id()?;
+            let player = state.get_player_mut(pc_id)?;
+            let pc_uid = player.get_uid();
+
+            if player.get_free_slots(ItemLocation::Inven) < items.len() {
+                return send_system_message(client, "Not enough space in inventory");
+            }
+
+            let db = db_get();
+            if db.is_code_redeemed(pc_uid, &code).await? {
+                return send_system_message(client, "You have already redeemed this code item");
+            }
+
+            // record the redemption before handing out the items so they can't be duplicated
+            db.record_code_redemption(pc_uid, &code).await?;
+
+            for item in items {
+                let slot_num = player.find_free_slot(ItemLocation::Inven)?;
+                player.set_item(ItemLocation::Inven, slot_num, Some(*item))?;
+
+                let location = ItemLocation::Inven as i32;
+                match config_get().general.protocol.get() {
+                    FFProtocol::v0104 => client.send_packet(
+                        P_FE2CL_REP_PC_GIVE_ITEM_SUCC,
+                        &v0104::sP_FE2CL_REP_PC_GIVE_ITEM_SUCC {
+                            eIL: location,
+                            iSlotNum: slot_num as i32,
+                            Item: Some(*item).into_proto(),
+                        },
+                    ),
+                    FFProtocol::v1013 => client.send_packet(
+                        P_FE2CL_REP_PC_GIVE_ITEM_SUCC,
+                        &v1013::sP_FE2CL_REP_PC_GIVE_ITEM_SUCC {
+                            eIL: location,
+                            iSlotNum: slot_num as i32,
+                            Item: Some(*item).into_proto(),
+                        },
+                    ),
+                }
+            }
+
+            log(
+                Severity::Info,
+                &format!("{} redeemed code {}", player, code),
+            );
+
+            send_system_message(
+                client,
+                if items.len() == 1 {
+                    "You have redeemed a code item"
+                } else {
+                    "You have redeemed code items"
+                },
+            )
         })
     }
 

@@ -43,7 +43,7 @@ use crate::{
     net::{
         self,
         crypto::{AES128_NONCE_SIZE, AUTH_CHALLENGE_MAX_SIZE},
-        struct_to_bytes, PacketBuffer, PACKET_BODY_SIZE, PACKET_ID_SIZE, SILENCED_PACKETS,
+        struct_to_bytes, PacketBuffer, MIN_PACKET_BUFFER_SIZE, PACKET_ID_SIZE, SILENCED_PACKETS,
     },
 };
 
@@ -689,6 +689,9 @@ pub enum PacketID {
     P_FE2CL_REP_PC_ITEM_ENCHANT_SUCC = 0x3100012d,             // 822083885
     P_FE2CL_REP_PC_ITEM_ENCHANT_FAIL = 0x3100012e,             // 822083886
 
+    // Academy only
+    P_FE2CL_REP_NANO_BOOK_SUBSET = 0x31000134, // 822083892
+
     P_LS2CL_REP_LOGIN_SUCC = 0x21000001,            // 553648129
     P_LS2CL_REP_LOGIN_FAIL = 0x21000002,            // 553648130
     P_LS2CL_REP_CHAR_INFO = 0x21000003,             // 553648131
@@ -937,7 +940,7 @@ impl FFPacket for sP_FE2LS_UPDATE_PC_STATUSES {}
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
 pub struct sP_FE2LS_UPDATE_MONITOR {
-    pub szUpdate: [u16; PACKET_BODY_SIZE / size_of::<u16>()],
+    pub szUpdate: [u16; (MIN_PACKET_BUFFER_SIZE - PACKET_ID_SIZE) / size_of::<u16>()],
 }
 impl FFPacket for sP_FE2LS_UPDATE_MONITOR {}
 

@@ -93,6 +93,8 @@ impl PostgresDatabase {
         let meta_table_exists: bool =
             Self::query(&db_client, "meta_table_exists", &[]).await?[0].get(0);
 
+        let protocol_version = config.protocol.get().version_number();
+
         if !meta_table_exists {
             log(
                 Severity::Info,
@@ -101,7 +103,7 @@ impl PostgresDatabase {
             Self::exec(
                 &mut db_client,
                 "create_tables",
-                &[&PROTOCOL_VERSION, &DB_VERSION],
+                &[&protocol_version, &DB_VERSION],
             )
             .await?;
         }
@@ -243,7 +245,7 @@ impl PostgresDatabase {
 
         Self::exec(client, "clear_items", &[&pc_uid]).await?;
         for (slot_num, item) in player.get_item_iter() {
-            let item_raw: sItemBase = Some(*item).into_proto();
+            let item_raw: v0104::sItemBase = Some(*item).into_proto();
             client
                 .execute(
                     &save_item,
@@ -428,7 +430,7 @@ impl PostgresDatabase {
         let items = Self::query(client, "load_items", &[&pc_uid]).await?;
         for item in items {
             let slot_num = item.get::<_, Int>("Slot") as usize;
-            let item_raw = sItemBase {
+            let item_raw = v0104::sItemBase {
                 iType: item.get::<_, Int>("Type") as i16,
                 iID: item.get::<_, Int>("ID") as i16,
                 iOpt: item.get::<_, Int>("Opt"),
@@ -554,6 +556,18 @@ impl DbImpl for PostgresDatabase {
             return Err(FFError::build(
                 db_error_severity(),
                 "Meta table has no DatabaseVersion row".to_string(),
+            ));
+        }
+        Ok(rows[0].get(0))
+    }
+
+    async fn get_protocol_version(&self) -> FFResult<Int> {
+        let client = self.get_client().await?;
+        let rows = Self::query(&client, "get_protocol_version", &[]).await?;
+        if rows.is_empty() {
+            return Err(FFError::build(
+                db_error_severity(),
+                "Meta table has no ProtocolVersion row".to_string(),
             ));
         }
         Ok(rows[0].get(0))
@@ -820,6 +834,19 @@ impl DbImpl for PostgresDatabase {
         assert_eq!(updated, 1);
         Ok(())
     }
+
+    async fn is_code_redeemed(&self, pc_uid: BigInt, code: &str) -> FFResult<bool> {
+        let client = self.get_client().await?;
+        let rows = Self::query(&client, "is_code_redeemed", &[&pc_uid, &code]).await?;
+        Ok(!rows.is_empty())
+    }
+
+    async fn record_code_redemption(&self, pc_uid: BigInt, code: &str) -> FFResult<()> {
+        let mut client = self.get_client().await?;
+        let updated = Self::exec(&mut client, "record_code_redemption", &[&pc_uid, &code]).await?;
+        assert_eq!(updated, 1);
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -882,7 +909,8 @@ mod test {
     #[tokio::test]
     #[ignore]
     async fn test_all_sql_files_prepare() {
-        use crate::defines::{DB_VERSION, PROTOCOL_VERSION};
+        use crate::config::config_get;
+        use crate::defines::DB_VERSION;
         use tokio_postgres::NoTls;
 
         let conn_str = pg_conn_str();
@@ -903,10 +931,12 @@ mod test {
         let reset_sql = std::fs::read_to_string("sql/reset_db.sql").unwrap();
         tx.batch_execute(&reset_sql).await.expect("reset_db failed");
 
+        let protocol_version = config_get().general.protocol.get().version_number();
+
         let create_tables_sql = std::fs::read_to_string("sql/create_tables.sql").unwrap();
         let param_regex = regex::Regex::new(r"\$([0-9]+)").unwrap();
         let mut params: &[&(dyn tokio_postgres::types::ToSql + Sync)] =
-            &[&PROTOCOL_VERSION, &DB_VERSION];
+            &[&protocol_version, &DB_VERSION];
 
         for stmt in create_tables_sql.split(';') {
             if stmt.trim().is_empty() {

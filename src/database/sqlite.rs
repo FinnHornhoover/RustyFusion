@@ -139,9 +139,12 @@ impl SqliteDatabase {
                 Severity::Info,
                 "Meta table missing; initializing database...",
             );
-            conn.interact(|conn| -> FFResult<()> {
+
+            let protocol_version = config.protocol.get().version_number();
+
+            conn.interact(move |conn| -> FFResult<()> {
                 let tx = conn.transaction()?;
-                Self::exec_in(&tx, "create_tables", &[&PROTOCOL_VERSION, &DB_VERSION])?;
+                Self::exec_in(&tx, "create_tables", &[&protocol_version, &DB_VERSION])?;
                 tx.commit()?;
                 Ok(())
             })
@@ -275,7 +278,7 @@ impl SqliteDatabase {
             let save_item_sql = Self::read_sql("save_item")?;
             let mut save_item = tx.prepare_cached(save_item_sql)?;
             for (slot_num, item) in player.get_item_iter() {
-                let item_raw: sItemBase = Some(*item).into_proto();
+                let item_raw: v0104::sItemBase = Some(*item).into_proto();
                 save_item.execute(params_from_iter(
                     [
                         &pc_uid as &dyn ToSql,
@@ -459,7 +462,7 @@ impl SqliteDatabase {
         let items = Self::query(conn, "load_items", &[&pc_uid])?;
         for item in &items {
             let slot_num = item.get::<Int>("Slot") as usize;
-            let item_raw = sItemBase {
+            let item_raw = v0104::sItemBase {
                 iType: item.get::<Int>("Type") as i16,
                 iID: item.get::<Int>("ID") as i16,
                 iOpt: item.get::<Int>("Opt"),
@@ -584,6 +587,23 @@ impl DbImpl for SqliteDatabase {
                 None => Err(FFError::build(
                     db_error_severity(),
                     "Meta table has no DatabaseVersion row".to_string(),
+                )),
+            }
+        })
+        .await?
+    }
+
+    async fn get_protocol_version(&self) -> FFResult<Int> {
+        let conn = self.pool.get().await?;
+        conn.interact(|conn| -> FFResult<Int> {
+            let sql = Self::read_sql("get_protocol_version")?;
+            let mut stmt = conn.prepare_cached(sql)?;
+            let mut rows = stmt.query([])?;
+            match rows.next()? {
+                Some(row) => Ok(row.get::<_, Int>(0)?),
+                None => Err(FFError::build(
+                    db_error_severity(),
+                    "Meta table has no ProtocolVersion row".to_string(),
                 )),
             }
         })
@@ -890,6 +910,25 @@ impl DbImpl for SqliteDatabase {
         let conn = self.pool.get().await?;
         let updated = conn
             .interact(move |conn| Self::exec(conn, "delete_player", &[&pc_uid]))
+            .await??;
+        assert_eq!(updated, 1);
+        Ok(())
+    }
+
+    async fn is_code_redeemed(&self, pc_uid: BigInt, code: &str) -> FFResult<bool> {
+        let conn = self.pool.get().await?;
+        let code = code.to_string();
+        let rows = conn
+            .interact(move |conn| Self::query(conn, "is_code_redeemed", &[&pc_uid, &code]))
+            .await??;
+        Ok(!rows.is_empty())
+    }
+
+    async fn record_code_redemption(&self, pc_uid: BigInt, code: &str) -> FFResult<()> {
+        let conn = self.pool.get().await?;
+        let code = code.to_string();
+        let updated = conn
+            .interact(move |conn| Self::exec(conn, "record_code_redemption", &[&pc_uid, &code]))
             .await??;
         assert_eq!(updated, 1);
         Ok(())

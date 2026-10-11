@@ -7,6 +7,7 @@ use std::{
 
 use crate::{
     chunk::{ChunkCoords, InstanceID},
+    config::config_get,
     defines::*,
     entity::{Combatant, Entity, EntityID},
     enums::{
@@ -15,7 +16,7 @@ use crate::{
     },
     error::{codes, log, log_if_failed, FFError, FFResult, Severity},
     helpers,
-    item::Item,
+    item::{Item, RewardItem},
     mission::{MissionJournal, Task, TaskDefinition},
     nano::Nano,
     net::{
@@ -23,7 +24,7 @@ use crate::{
             PacketID::{self, *},
             *,
         },
-        FFClient,
+        FFClient, FFProtocol,
     },
     path::Path,
     skills::{BuffContainer, BuffInstance},
@@ -184,24 +185,36 @@ impl Default for Nanocom {
 #[derive(Debug, Clone)]
 struct PlayerInventory {
     main: [Option<Item>; SIZEOF_INVEN_SLOT as usize],
-    equipped: [Option<Item>; SIZEOF_EQUIP_SLOT as usize],
+    equipped: [Option<Item>; MAX_SIZEOF_EQUIP_SLOT],
     quest: [Option<(i16, usize)>; SIZEOF_QINVEN_SLOT as usize],
-    bank: [Option<Item>; SIZEOF_BANK_SLOT as usize],
+    bank: [Option<Item>; MAX_SIZEOF_BANK_SLOT],
 }
 impl Default for PlayerInventory {
     fn default() -> Self {
         Self {
             main: [None; SIZEOF_INVEN_SLOT as usize],
-            equipped: [None; SIZEOF_EQUIP_SLOT as usize],
+            equipped: [None; MAX_SIZEOF_EQUIP_SLOT],
             quest: [None; SIZEOF_QINVEN_SLOT as usize],
-            bank: [None; SIZEOF_BANK_SLOT as usize],
+            bank: [None; MAX_SIZEOF_BANK_SLOT],
         }
     }
 }
 impl PlayerInventory {
-    fn get_quest_item_arr(&self) -> [sItemBase; SIZEOF_QINVEN_SLOT as usize] {
+    fn get_quest_item_arr_104(&self) -> [v0104::sItemBase; SIZEOF_QINVEN_SLOT as usize] {
         self.quest.map(|vals| {
-            let mut item_raw = sItemBase::default();
+            let mut item_raw = v0104::sItemBase::default();
+            if let Some((id, count)) = vals {
+                item_raw.iType = ItemType::Quest as i16;
+                item_raw.iID = id;
+                item_raw.iOpt = count as i32;
+            }
+            item_raw
+        })
+    }
+
+    fn get_quest_item_arr_1013(&self) -> [v1013::sItemBase; SIZEOF_QINVEN_SLOT as usize] {
+        self.quest.map(|vals| {
+            let mut item_raw = v1013::sItemBase::default();
             if let Some((id, count)) = vals {
                 item_raw.iType = ItemType::Quest as i16;
                 item_raw.iID = id;
@@ -666,8 +679,8 @@ impl Player {
         self.nano_data.nano_inventory.values()
     }
 
-    pub fn get_load_data(&self) -> sPCLoadData2CL {
-        sPCLoadData2CL {
+    pub fn get_load_data_104(&self) -> v0104::sPCLoadData2CL {
+        v0104::sPCLoadData2CL {
             iUserLevel: 0, // allow anyone to send GM commands; we'll validate perms
             PCStyle: self.get_style(),
             PCStyle2: self.get_style_2(),
@@ -685,9 +698,9 @@ impl Player {
             iY: self.position.y,
             iZ: self.position.z,
             iAngle: self.rotation,
-            aEquip: self.inventory.equipped.map(Option::<Item>::into_proto),
+            aEquip: self.get_equip_arr_104(),
             aInven: self.inventory.main.map(Option::<Item>::into_proto),
-            aQInven: self.inventory.get_quest_item_arr(),
+            aQInven: self.inventory.get_quest_item_arr_104(),
             aNanoBank: self.nano_data.as_bank(),
             aNanoSlots: self.nano_data.as_slots(),
             iActiveNanoSlotNum: match self.nano_data.active_slot {
@@ -696,7 +709,66 @@ impl Player {
             },
             iConditionBitFlag: self.get_condition_bit_flag(),
             eCSTB___Add: placeholder!(0),
-            TimeBuff: sTimeBuff {
+            TimeBuff: v0104::sTimeBuff {
+                iTimeLimit: placeholder!(0),
+                iTimeDuration: placeholder!(0),
+                iTimeRepeat: placeholder!(0),
+                iValue: placeholder!(0),
+                iConfirmNum: placeholder!(0),
+            },
+            aQuestFlag: self
+                .mission_journal
+                .completed_mission_flags
+                .to_array()
+                .unwrap(),
+            aRepeatQuestFlag: unused!(),
+            aRunningQuest: self.mission_journal.get_running_quests(),
+            iCurrentMissionID: self.mission_journal.get_active_mission_id().unwrap_or(0),
+            iWarpLocationFlag: self.flags.scamper_flags.get_chunk(0).unwrap(),
+            aWyvernLocationFlag: self.flags.skyway_flags.to_array().unwrap(),
+            iBuddyWarpTime: self
+                .buddy_warp_available_at
+                .map_or(0, |available_at| available_at as i32),
+            iFatigue: unused!(),
+            iFatigue_Level: unused!(),
+            iFatigueRate: unused!(),
+            iFirstUseFlag1: self.flags.tip_flags.get_chunk(0).unwrap(),
+            iFirstUseFlag2: self.flags.tip_flags.get_chunk(1).unwrap(),
+            aiPCSkill: [unused!(); 33],
+        }
+    }
+
+    pub fn get_load_data_1013(&self) -> v1013::sPCLoadData2CL {
+        v1013::sPCLoadData2CL {
+            iUserLevel: 0, // allow anyone to send GM commands; we'll validate perms
+            PCStyle: self.get_style(),
+            PCStyle2: self.get_style_2(),
+            iLevel: self.level,
+            iMentor: self.guide_data.current_guide as i16,
+            iMentorCount: self.guide_data.total_guides as i16,
+            iHP: self.hp,
+            iBatteryW: self.weapon_boosts as i32,
+            iBatteryN: self.nano_potions as i32,
+            iCandy: self.taros as i32,
+            iFusionMatter: self.fusion_matter as i32,
+            iSpecialState: self.get_special_state_bit_flag(),
+            iMapNum: self.get_mapnum() as i32,
+            iX: self.position.x,
+            iY: self.position.y,
+            iZ: self.position.z,
+            iAngle: self.rotation,
+            aEquip: self.get_equip_arr_1013(),
+            aInven: self.inventory.main.map(Option::<Item>::into_proto),
+            aQInven: self.inventory.get_quest_item_arr_1013(),
+            aNanoBank: self.nano_data.as_bank(),
+            aNanoSlots: self.nano_data.as_slots(),
+            iActiveNanoSlotNum: match self.nano_data.active_slot {
+                Some(active_slot) => active_slot as i16,
+                None => -1,
+            },
+            iConditionBitFlag: self.get_condition_bit_flag(),
+            eCSTB___Add: placeholder!(0),
+            TimeBuff: v1013::sTimeBuff {
                 iTimeLimit: placeholder!(0),
                 iTimeDuration: placeholder!(0),
                 iTimeRepeat: placeholder!(0),
@@ -808,8 +880,8 @@ impl Player {
         flags as i8
     }
 
-    pub fn get_appearance_data(&self) -> sPCAppearanceData {
-        sPCAppearanceData {
+    pub fn get_appearance_data_104(&self) -> v0104::sPCAppearanceData {
+        v0104::sPCAppearanceData {
             iID: self.id.unwrap_or_default(),
             PCStyle: self.get_style(),
             iConditionBitFlag: self.get_condition_bit_flag(),
@@ -822,7 +894,27 @@ impl Player {
             iY: self.position.y,
             iZ: self.position.z,
             iAngle: self.rotation,
-            ItemEquip: self.inventory.equipped.map(Option::<Item>::into_proto),
+            ItemEquip: self.get_equip_arr_104(),
+            Nano: self.get_active_nano().into_proto(),
+            eRT: unused!(),
+        }
+    }
+
+    pub fn get_appearance_data_1013(&self) -> v1013::sPCAppearanceData {
+        v1013::sPCAppearanceData {
+            iID: self.id.unwrap_or_default(),
+            PCStyle: self.get_style(),
+            iConditionBitFlag: self.get_condition_bit_flag(),
+            iPCState: self.get_state_bit_flag(),
+            iSpecialState: self.get_special_state_bit_flag(),
+            iLv: self.level,
+            iHP: self.hp,
+            iMapNum: self.get_mapnum() as i32,
+            iX: self.position.x,
+            iY: self.position.y,
+            iZ: self.position.z,
+            iAngle: self.rotation,
+            ItemEquip: self.get_equip_arr_1013(),
             Nano: self.get_active_nano().into_proto(),
             eRT: unused!(),
         }
@@ -833,9 +925,10 @@ impl Player {
             Severity::Warning,
             format!("Bad slot number: {slot_num} (location {:?})", location),
         ));
+        let protocol = config_get().general.protocol.get();
         match location {
             ItemLocation::Equip => {
-                if slot_num < SIZEOF_EQUIP_SLOT as usize {
+                if slot_num < sizeof_equip_slot(&protocol) {
                     Ok(&self.inventory.equipped[slot_num])
                 } else {
                     err
@@ -850,7 +943,7 @@ impl Player {
             }
             ItemLocation::QInven => unimplemented!("Quest items not accessible by slot number"),
             ItemLocation::Bank => {
-                if slot_num < SIZEOF_BANK_SLOT as usize {
+                if slot_num < sizeof_bank_slot(&protocol) {
                     Ok(&self.inventory.bank[slot_num])
                 } else {
                     err
@@ -875,10 +968,11 @@ impl Player {
                 self.id.unwrap_or_default()
             ),
         ));
+        let protocol = config_get().general.protocol.get();
 
         let res = match location {
             ItemLocation::Equip => {
-                if slot_num < SIZEOF_EQUIP_SLOT as usize {
+                if slot_num < sizeof_equip_slot(&protocol) {
                     Ok(&mut self.inventory.equipped[slot_num])
                 } else {
                     err_oob
@@ -893,7 +987,7 @@ impl Player {
             }
             ItemLocation::QInven => unimplemented!("Quest items not accessible by slot number"),
             ItemLocation::Bank => {
-                if slot_num < SIZEOF_BANK_SLOT as usize {
+                if slot_num < sizeof_bank_slot(&protocol) {
                     Ok(&mut self.inventory.bank[slot_num])
                 } else {
                     err_oob
@@ -1054,7 +1148,9 @@ impl Player {
     }
 
     pub fn get_item_iter(&self) -> impl Iterator<Item = (usize, &Item)> {
-        let inv_slot_max = (SIZEOF_EQUIP_SLOT + SIZEOF_INVEN_SLOT + SIZEOF_BANK_SLOT) as usize;
+        let protocol = config_get().general.protocol.get();
+        let inv_slot_max =
+            sizeof_equip_slot(&protocol) + SIZEOF_INVEN_SLOT as usize + sizeof_bank_slot(&protocol);
         (0..inv_slot_max).filter_map(move |slot_num| {
             let (loc, slot_num_loc) = util::slot_num_to_loc_and_slot_num(slot_num).unwrap();
             let item = self.get_item(loc, slot_num_loc).unwrap();
@@ -1070,8 +1166,30 @@ impl Player {
             .map(|(id, count)| (*id, *count))
     }
 
-    pub fn get_equipped(&self) -> &[Option<Item>; 9] {
+    pub fn get_equipped(&self) -> &[Option<Item>; MAX_SIZEOF_EQUIP_SLOT] {
         &self.inventory.equipped
+    }
+
+    pub fn get_equip_arr_104<const N: usize>(&self) -> [v0104::sItemBase; N] {
+        std::array::from_fn(|i| {
+            self.inventory
+                .equipped
+                .get(i)
+                .copied()
+                .flatten()
+                .into_proto()
+        })
+    }
+
+    pub fn get_equip_arr_1013<const N: usize>(&self) -> [v1013::sItemBase; N] {
+        std::array::from_fn(|i| {
+            self.inventory
+                .equipped
+                .get(i)
+                .copied()
+                .flatten()
+                .into_proto()
+        })
     }
 
     pub fn get_taros(&self) -> u32 {
@@ -1111,26 +1229,34 @@ impl Player {
 
     pub fn set_tutorial_done(&mut self) {
         self.flags.tutorial_flag = true;
-        // unlock buttercup
-        let buttercup_stats = tdata_get().get_nano_stats(ID_BUTTERCUP).unwrap();
-        self.unlock_nano(ID_BUTTERCUP).unwrap();
-        self.tune_nano(ID_BUTTERCUP, Some(buttercup_stats.skills[0]))
+        let protocol = config_get().general.protocol.get();
+        if let FFProtocol::v0104 = protocol {
+            // unlock buttercup
+            let buttercup_stats = tdata_get().get_nano_stats(ID_BUTTERCUP).unwrap();
+            self.unlock_nano(ID_BUTTERCUP).unwrap();
+            self.tune_nano(ID_BUTTERCUP, Some(buttercup_stats.skills[0]))
+                .unwrap();
+            self.change_nano(0, Some(ID_BUTTERCUP)).unwrap();
+            // equip lightning gun
+            self.set_item(
+                ItemLocation::Equip,
+                EQUIP_SLOT_HAND as usize,
+                Some(Item::new(ItemType::Hand, ID_LIGHTNING_GUN)),
+            )
             .unwrap();
-        self.change_nano(0, Some(ID_BUTTERCUP)).unwrap();
-        // equip lightning gun
-        self.set_item(
-            ItemLocation::Equip,
-            EQUIP_SLOT_HAND as usize,
-            Some(Item::new(ItemType::Hand, ID_LIGHTNING_GUN)),
-        )
-        .unwrap();
-        // place in Sector V future
+        }
+
+        let (spawn_x, spawn_y, spawn_z) = match protocol {
+            FFProtocol::v0104 => (632032, 187177, -5500), // Sector V future
+            FFProtocol::v1013 => (19835, 108682, 8450),   // Null Void
+        };
+
         let mut rand = rand::thread_rng();
         let range = 0; //PC_START_LOCATION_RANDOM_RANGE as i32 / 2;
         self.position = Position {
-            x: 632032 + rand.gen_range(-range..=range),
-            y: 187177 + rand.gen_range(-range..=range),
-            z: -5500,
+            x: spawn_x + rand.gen_range(-range..=range),
+            y: spawn_y + rand.gen_range(-range..=range),
+            z: spawn_z,
         }
     }
 
@@ -1150,7 +1276,7 @@ impl Player {
     }
 
     pub fn is_future_done(&self) -> bool {
-        self.flags.payzone_flag
+        self.get_payzone_flag()
     }
 
     pub fn set_taros(&mut self, taros: u32) -> u32 {
@@ -1194,43 +1320,69 @@ impl Player {
         };
 
         if let Some(client) = self.get_client() {
-            if self.fusion_matter >= level_up_fusion_matter
-                && !self.mission_journal.has_nano_mission()
-            {
-                let Ok(level_up_task_def) = tdata_get().get_task_definition(level_up_task_id)
-                else {
-                    log(
-                        Severity::Warning,
-                        &format!("Level up task with ID {} doesn't exist!", level_up_task_id),
-                    );
-                    return self.fusion_matter;
-                };
+            if self.fusion_matter >= level_up_fusion_matter {
+                match config_get().general.protocol.get() {
+                    FFProtocol::v0104 => {
+                        // Blossom's nano mission is withheld until the player reaches the Past
+                        if self.level >= 4 && !self.is_future_done() {
+                            return self.fusion_matter;
+                        }
 
-                let level_up_mission_def = tdata_get()
-                    .get_mission_definition(level_up_task_def.mission_id)
-                    .unwrap();
+                        if !self.mission_journal.has_nano_mission() {
+                            let Ok(level_up_task_def) =
+                                tdata_get().get_task_definition(level_up_task_id)
+                            else {
+                                log(
+                                    Severity::Warning,
+                                    &format!(
+                                        "Level up task with ID {} doesn't exist!",
+                                        level_up_task_id
+                                    ),
+                                );
+                                return self.fusion_matter;
+                            };
 
-                log(
-                    Severity::Info,
-                    &format!(
-                        "{} started nano mission: {} [{}]",
-                        self, level_up_mission_def.mission_name, level_up_mission_def.mission_id
-                    ),
-                );
+                            let level_up_mission_def = tdata_get()
+                                .get_mission_definition(level_up_task_def.mission_id)
+                                .unwrap();
 
-                self.mission_journal
-                    .start_task(level_up_task_def.into(), self.level)
-                    .unwrap();
+                            log(
+                                Severity::Info,
+                                &format!(
+                                    "{} started nano mission: {} [{}]",
+                                    self,
+                                    level_up_mission_def.mission_name,
+                                    level_up_mission_def.mission_id
+                                ),
+                            );
 
-                let pkt = sP_FE2CL_REP_PC_TASK_START_SUCC {
-                    iTaskNum: level_up_task_id,
-                    iRemainTime: level_up_task_def
-                        .obj_time_limit
-                        .map(|d| d.as_secs() as i32)
-                        .unwrap_or(unused!()),
-                };
+                            self.mission_journal
+                                .start_task(level_up_task_def.into(), self.level)
+                                .unwrap();
 
-                client.send_packet(P_FE2CL_REP_PC_TASK_START_SUCC, &pkt);
+                            let pkt = sP_FE2CL_REP_PC_TASK_START_SUCC {
+                                iTaskNum: level_up_task_id,
+                                iRemainTime: level_up_task_def
+                                    .obj_time_limit
+                                    .map(|d| d.as_secs() as i32)
+                                    .unwrap_or(unused!()),
+                            };
+
+                            client.send_packet(P_FE2CL_REP_PC_TASK_START_SUCC, &pkt);
+                        }
+                    }
+                    FFProtocol::v1013 => {
+                        if self.set_level(self.level + 1).is_ok() {
+                            self.fusion_matter -= level_up_fusion_matter;
+                            let pkt = sP_FE2CL_REP_PC_CHANGE_LEVEL_SUCC {
+                                iLevel: self.level as i32,
+                                iFusionMatter: self.fusion_matter as i32,
+                            };
+
+                            client.send_packet(P_FE2CL_REP_PC_CHANGE_LEVEL_SUCC, &pkt);
+                        }
+                    }
+                }
             }
         }
 
@@ -1537,17 +1689,12 @@ impl Player {
                         let curr_count = player.get_quest_item_count(*qitem_id) as isize;
                         let new_count = (curr_count + *qitem_count_mod) as usize;
                         let qitem_slot = player.set_quest_item_count(*qitem_id, new_count).unwrap();
-                        let qitem_reward = sItemReward {
-                            sItem: sItemBase {
-                                iType: ItemType::Quest as i16,
-                                iID: *qitem_id,
-                                iOpt: new_count as i32,
-                                iTimeLimit: unused!(),
-                            },
-                            eIL: ItemLocation::QInven as i32,
-                            iSlotNum: qitem_slot as i32,
+                        let qitem_reward = RewardItem::Quest {
+                            id: *qitem_id,
+                            count: new_count,
+                            slot_num: qitem_slot,
                         };
-                        pkt.push(&qitem_reward);
+                        helpers::push_item_reward(&mut pkt, qitem_reward);
                     }
 
                     if let Some(pkt) = log_if_failed(pkt.build()) {
@@ -1597,16 +1744,14 @@ impl Player {
                     .set_quest_item_count(repair_qitem_id, qitem_amt)
                     .unwrap(); // no-op
 
-                reward_pkt.push(&sItemReward {
-                    sItem: sItemBase {
-                        iType: ItemType::Quest as i16,
-                        iID: repair_qitem_id,
-                        iOpt: qitem_amt as i32,
-                        iTimeLimit: unused!(),
+                helpers::push_item_reward(
+                    &mut reward_pkt,
+                    RewardItem::Quest {
+                        id: repair_qitem_id,
+                        count: qitem_amt,
+                        slot_num: qitem_slot,
                     },
-                    eIL: ItemLocation::QInven as i32,
-                    iSlotNum: qitem_slot as i32,
-                });
+                );
 
                 if let Some(reward_pkt) = log_if_failed(reward_pkt.build()) {
                     client.send_payload(reward_pkt);
@@ -1688,7 +1833,7 @@ impl Player {
         let condition_bit_flag = player.buffs.get_bit_flags();
         if let Some(client) = player.get_client() {
             for update in buff_updates {
-                let mut pkt: sP_FE2CL_PC_BUFF_UPDATE = update.into();
+                let mut pkt: v0104::sP_FE2CL_PC_BUFF_UPDATE = update.into();
                 pkt.iConditionBitFlag = condition_bit_flag;
                 client.send_packet(P_FE2CL_PC_BUFF_UPDATE, &pkt);
             }
@@ -1904,10 +2049,20 @@ impl Entity for Player {
     }
 
     fn send_enter(&self, client: &FFClient) {
-        let pkt = sP_FE2CL_PC_NEW {
-            PCAppearanceData: self.get_appearance_data(),
-        };
-        client.send_packet(PacketID::P_FE2CL_PC_NEW, &pkt);
+        match config_get().general.protocol.get() {
+            FFProtocol::v0104 => {
+                let pkt = v0104::sP_FE2CL_PC_NEW {
+                    PCAppearanceData: self.get_appearance_data_104(),
+                };
+                client.send_packet(PacketID::P_FE2CL_PC_NEW, &pkt);
+            }
+            FFProtocol::v1013 => {
+                let pkt = v1013::sP_FE2CL_PC_NEW {
+                    PCAppearanceData: self.get_appearance_data_1013(),
+                };
+                client.send_packet(PacketID::P_FE2CL_PC_NEW, &pkt);
+            }
+        }
     }
 
     fn send_exit(&self, client: &FFClient) {

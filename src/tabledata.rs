@@ -20,6 +20,7 @@ use crate::{
     item::{CrocPotData, Item, ItemStats, Reward, VendorData, VendorItem},
     mission::{MissionDefinition, TaskDefinition},
     nano::{NanoStats, NanoTuning},
+    net::FFProtocol,
     path::{Path, PathPoint},
     skills::Skill,
     util, Position,
@@ -42,7 +43,12 @@ struct XDTData {
 }
 impl XDTData {
     fn load() -> Result<Self, String> {
-        let root = load_json("xdt.json")?;
+        let protocol = config_get().general.protocol.get();
+        let root = load_json(match protocol {
+            FFProtocol::v0104 => "xdt.json",
+            FFProtocol::v1013 => "xdt1013.json",
+        })?;
+
         Ok(Self {
             vendor_data: load_vendor_data(&root)
                 .map_err(|e| format!("Error loading vendor data: {}", e))?,
@@ -314,6 +320,8 @@ struct DropData {
     rarity_weights: HashMap<i32, RarityWeights>,
     item_sets: HashMap<i32, ItemSet>,
     item_refs: HashMap<i32, ItemReference>,
+    nano_capsules: HashMap<i16, i16>,
+    code_items: HashMap<String, Vec<Item>>,
 }
 
 struct PathData {
@@ -596,6 +604,17 @@ impl TableData {
             eggs.push(egg);
         }
         eggs
+    }
+
+    pub fn get_nano_from_capsule(&self, crate_id: i16) -> Option<i16> {
+        self.drop_data.nano_capsules.get(&crate_id).copied()
+    }
+
+    pub fn get_code_items(&self, code: &str) -> Option<&[Item]> {
+        self.drop_data
+            .code_items
+            .get(&code.to_lowercase())
+            .map(Vec::as_slice)
     }
 
     pub fn get_item_from_crate(&self, crate_id: i16, gender: i32) -> FFResult<Item> {
@@ -952,19 +971,94 @@ pub fn tdata_get() -> &'static TableData {
 }
 
 fn load_json(filename: &str) -> Result<Map<String, Value>, String> {
-    let tdata_path = config_get().general.table_data_path.get();
+    let config = &config_get().general;
+    let tdata_path = config.table_data_path.get();
     let path = std::path::Path::new(&tdata_path).join(filename);
 
     let file = std::fs::read_to_string(path.clone())
         .map_err(|e| format!("Couldn't read file {:?}: {}", path, e))?;
-    let json = serde_json::from_str(&file)
+    let mut json = serde_json::from_str(&file)
         .map_err(|e| format!("Couldn't parse {:?} as JSON: {}", path, e))?;
+
+    let mut patches = match config.protocol.get() {
+        FFProtocol::v0104 => vec!["0104-fixes"],
+        FFProtocol::v1013 => vec!["1013", "1013-fixes"],
+    }
+    .into_iter()
+    .map(|s| s.to_string())
+    .collect::<Vec<String>>();
+
+    patches.extend(config.enabled_patches.get());
+
+    for patch in &patches {
+        let patch_path = std::path::Path::new(&tdata_path)
+            .join("patch/")
+            .join(patch)
+            .join(filename);
+
+        if let Ok(file) = std::fs::read_to_string(&patch_path) {
+            if let Ok(patch_json) = serde_json::from_str(&file) {
+                if let Err(e) = apply_patch(&mut json, patch_json) {
+                    return Err(format!("Failed to apply patch {:?}: {}", patch_path, e));
+                } else {
+                    log(
+                        Severity::Info,
+                        &format!("Applied tabledata patch {} to {}", patch, filename),
+                    );
+                }
+            }
+        }
+    }
 
     let Value::Object(root) = json else {
         return Err(format!("Malformed {:?}", path));
     };
-    // TODO patching
+
     Ok(root)
+}
+
+fn apply_patch(root: &mut Value, patch: Value) -> Result<(), String> {
+    match (root, patch) {
+        (Value::Bool(root_bool), Value::Bool(patch_bool)) => {
+            *root_bool = patch_bool;
+        }
+        (Value::String(root_str), Value::String(patch_str)) => {
+            *root_str = patch_str;
+        }
+        (Value::Number(root_num), Value::Number(patch_num)) => {
+            let types_match = (root_num.is_i64() && patch_num.is_i64())
+                || (root_num.is_u64() && patch_num.is_u64())
+                || (root_num.is_f64() && patch_num.is_f64());
+
+            if !types_match {
+                return Err("Number types do not match".to_string());
+            }
+
+            *root_num = patch_num;
+        }
+        (Value::Array(root_arr), Value::Array(patch_arr)) => {
+            root_arr.extend(patch_arr);
+        }
+        (Value::Object(root_obj), Value::Object(patch_obj)) => {
+            for (k, v) in patch_obj {
+                if let Some(key) = k.strip_prefix('!') {
+                    // Forced replacement
+                    root_obj.insert(key.to_string(), v);
+                } else if let Value::Null = v {
+                    // Removal
+                    root_obj.remove(&k);
+                } else if let Some(existing) = root_obj.get_mut(&k) {
+                    // Recursive patch application
+                    apply_patch(existing, v)?;
+                } else {
+                    // New key-value pair
+                    root_obj.insert(k, v);
+                }
+            }
+        }
+        _ => return Err("Invalid patch".to_string()),
+    }
+    Ok(())
 }
 
 fn get_object<'a>(
@@ -2054,6 +2148,14 @@ fn load_npcs() -> Result<Vec<NPCSpawnData>, String> {
         for (k, v) in table {
             let npc_data_entry: NPCSpawnDataEntry = serde_json::from_value(v.clone())
                 .map_err(|e| format!("Malformed NPC data entry: {}", e))?;
+
+            if let FFProtocol::v1013 = config_get().general.protocol.get() {
+                // Academy's map doesn't include the Future; skip all NPCs spawned there for parity with OpenFusion
+                if npc_data_entry.iX > 512000 && npc_data_entry.iY < 256000 {
+                    continue;
+                }
+            }
+
             let key: i32 = k.parse().map_err(|e| format!("Malformed NPC key: {}", e))?;
             let npc_data_entry = NPCSpawnData {
                 group_id: if is_group { Some(key) } else { None },
@@ -2112,6 +2214,8 @@ fn load_drop_data() -> Result<DropData, String> {
     const RARITY_WEIGHTS_TABLE_KEY: &str = "RarityWeights";
     const ITEM_SETS_TABLE_KEY: &str = "ItemSets";
     const ITEM_REFERENCES_TABLE_KEY: &str = "ItemReferences";
+    const NANO_CAPSULES_TABLE_KEY: &str = "NanoCapsules";
+    const CODE_ITEMS_TABLE_KEY: &str = "CodeItems";
 
     const CRATE_DROP_CHANCES_ID_KEY: &str = "CrateDropChanceID";
     const CRATE_DROP_TYPES_ID_KEY: &str = "CrateDropTypeID";
@@ -2123,6 +2227,64 @@ fn load_drop_data() -> Result<DropData, String> {
     const RARITY_WEIGHTS_ID_KEY: &str = "RarityWeightID";
     const ITEM_SETS_ID_KEY: &str = "ItemSetID";
     const ITEM_REFERENCES_ID_KEY: &str = "ItemReferenceID";
+
+    fn load_nano_capsules(table: &Map<String, Value>) -> Result<HashMap<i16, i16>, String> {
+        #[derive(Deserialize)]
+        struct NanoCapsuleEntry {
+            CrateID: i16,
+            Nano: i16,
+        }
+
+        let mut capsules = HashMap::new();
+        for (_, v) in table {
+            let entry: NanoCapsuleEntry = serde_json::from_value(v.clone())
+                .map_err(|e| format!("Malformed nano capsule entry: {}", e))?;
+            capsules.insert(entry.CrateID, entry.Nano);
+        }
+        Ok(capsules)
+    }
+
+    fn load_code_items(
+        table: &Map<String, Value>,
+        item_refs: &HashMap<i32, ItemReference>,
+    ) -> Result<HashMap<String, Vec<Item>>, String> {
+        #[derive(Deserialize)]
+        struct CodeItemEntry {
+            Code: String,
+            ItemReferenceIDs: Vec<i32>,
+        }
+
+        let mut code_items = HashMap::new();
+        for (_, v) in table {
+            let entry: CodeItemEntry = serde_json::from_value(v.clone())
+                .map_err(|e| format!("Malformed code item entry: {}", e))?;
+
+            let mut items = Vec::with_capacity(entry.ItemReferenceIDs.len());
+            for item_ref_id in entry.ItemReferenceIDs {
+                let item = item_refs.get(&item_ref_id).and_then(|item_ref| {
+                    let ty: ItemType = (item_ref.Type as i16).try_into().ok()?;
+                    let id = item_ref.ItemID as i16;
+                    (id != 0).then(|| Item::new(ty, id))
+                });
+
+                match item {
+                    Some(item) => items.push(item),
+                    None => log(
+                        Severity::Warning,
+                        &format!(
+                            "Invalid item reference {} for code {}, skipping",
+                            item_ref_id, entry.Code
+                        ),
+                    ),
+                }
+            }
+
+            if !items.is_empty() {
+                code_items.insert(entry.Code.to_lowercase(), items);
+            }
+        }
+        Ok(code_items)
+    }
 
     fn load_drop_table<T: DeserializeOwned>(
         table: &Map<String, Value>,
@@ -2163,6 +2325,20 @@ fn load_drop_data() -> Result<DropData, String> {
         None => HashMap::new(),
         _ => return Err("Events must be an object".to_string()),
     };
+    // only Academy tabledata defines nano capsules
+    let nano_capsules = match drop_root.get(NANO_CAPSULES_TABLE_KEY) {
+        Some(Value::Object(table)) => load_nano_capsules(table)?,
+        _ => HashMap::new(),
+    };
+
+    let item_refs = load_drop_table(item_references_table, ITEM_REFERENCES_ID_KEY)?;
+
+    // only Academy tabledata defines code items
+    let code_items = match drop_root.get(CODE_ITEMS_TABLE_KEY) {
+        Some(Value::Object(table)) => load_code_items(table, &item_refs)?,
+        _ => HashMap::new(),
+    };
+
     Ok(DropData {
         events,
         crate_drop_chances: load_drop_table(crate_drop_chances_table, CRATE_DROP_CHANCES_ID_KEY)?,
@@ -2177,7 +2353,9 @@ fn load_drop_data() -> Result<DropData, String> {
 
         rarity_weights: load_drop_table(rarity_weights_table, RARITY_WEIGHTS_ID_KEY)?,
         item_sets: load_drop_table(item_sets_table, ITEM_SETS_ID_KEY)?,
-        item_refs: load_drop_table(item_references_table, ITEM_REFERENCES_ID_KEY)?,
+        item_refs,
+        nano_capsules,
+        code_items,
     })
 }
 

@@ -188,6 +188,7 @@ macro_rules! define_db_api {
 
 define_db_api! {
     get_db_version(&self) -> Int;
+    get_protocol_version(&self) -> Int;
     find_account_from_username(&self, username: &str) -> Option<Account>;
     find_account_from_player(&self, pc_uid: BigInt) -> Option<Account>;
     create_account(&self, username: &str, password_hashed: &str) -> Account;
@@ -202,6 +203,8 @@ define_db_api! {
     load_player(&self, acc_id: BigInt, pc_uid: BigInt) -> Option<Player>;
     load_players(&self, acc_id: BigInt) -> Vec<Player>;
     delete_player(&self, pc_uid: BigInt) -> ();
+    is_code_redeemed(&self, pc_uid: BigInt, code: &str) -> bool;
+    record_code_redemption(&self, pc_uid: BigInt, code: &str) -> ();
 }
 
 fn format_db_conn_error(parent_error: FFError) -> FFError {
@@ -272,6 +275,22 @@ pub async fn db_init(error_severity: Severity) -> FFResult<&'static Database<DbB
                 "Database version mismatch: server expects {}, but database is at {}. \
                  Migrate the database or use a compatible server version.",
                 DB_VERSION, found_version,
+            ),
+        ));
+    }
+
+    let protocol = config.protocol.get();
+    let found_protocol = db.get_protocol_version().await?;
+    if found_protocol != protocol.version_number() {
+        return Err(FFError::build(
+            error_severity,
+            format!(
+                "Database protocol mismatch: server is configured for {:?} ({}), \
+                 but database was created for protocol {}. \
+                 Databases cannot be converted between protocols; create a new one.",
+                protocol,
+                protocol.version_number(),
+                found_protocol,
             ),
         ));
     }

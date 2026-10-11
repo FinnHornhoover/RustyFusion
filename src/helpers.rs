@@ -2,18 +2,176 @@ use rand::{rngs::ThreadRng, Rng};
 use uuid::Uuid;
 
 use crate::{
-    defines::RANGE_GROUP_PARTICIPATE,
+    config::config_get,
+    defines::{MSG_BOX_DURATION_DEFAULT, RANGE_GROUP_PARTICIPATE},
     entity::{Combatant, Entity, EntityID, Player},
     enums::*,
     error::*,
+    item::{Item, RewardItem},
+    nano::Nano,
     net::{
         packet::{PacketID::*, *},
-        FFClient,
+        FFClient, FFProtocol,
     },
     state::ShardServerState,
     tabledata::tdata_get,
-    util,
+    util, Position,
 };
+
+pub fn send_equip_change(client: &FFClient, pc_id: i32, equip_slot_num: i32, item: Option<Item>) {
+    match config_get().general.protocol.get() {
+        FFProtocol::v0104 => client.send_packet(
+            P_FE2CL_PC_EQUIP_CHANGE,
+            &v0104::sP_FE2CL_PC_EQUIP_CHANGE {
+                iPC_ID: pc_id,
+                iEquipSlotNum: equip_slot_num,
+                EquipSlotItem: item.into_proto(),
+            },
+        ),
+        FFProtocol::v1013 => client.send_packet(
+            P_FE2CL_PC_EQUIP_CHANGE,
+            &v1013::sP_FE2CL_PC_EQUIP_CHANGE {
+                iPC_ID: pc_id,
+                iEquipSlotNum: equip_slot_num,
+                EquipSlotItem: item.into_proto(),
+            },
+        ),
+    }
+}
+
+pub fn send_nano_create_succ(
+    client: &FFClient,
+    fusion_matter: u32,
+    quest_item_slot_num: Option<i32>,
+    quest_item: Option<Item>,
+    nano: Option<&Nano>,
+    level: i16,
+) {
+    match config_get().general.protocol.get() {
+        FFProtocol::v0104 => client.send_packet(
+            P_FE2CL_REP_PC_NANO_CREATE_SUCC,
+            &v0104::sP_FE2CL_REP_PC_NANO_CREATE_SUCC {
+                iPC_FusionMatter: fusion_matter as i32,
+                iQuestItemSlotNum: quest_item_slot_num.unwrap_or(-1),
+                QuestItem: quest_item.into_proto(),
+                Nano: nano.into_proto(),
+                iPC_Level: level,
+            },
+        ),
+        FFProtocol::v1013 => client.send_packet(
+            P_FE2CL_REP_PC_NANO_CREATE_SUCC,
+            &v1013::sP_FE2CL_REP_PC_NANO_CREATE_SUCC {
+                iPC_FusionMatter: fusion_matter as i32,
+                iQuestItemSlotNum: quest_item_slot_num.unwrap_or(-1),
+                QuestItem: quest_item.into_proto(),
+                Nano: nano.into_proto(),
+                iPC_Level: level,
+            },
+        ),
+    }
+}
+
+pub fn send_warp_use_npc_succ(
+    client: &FFClient,
+    pos: Position,
+    location: i32,
+    item_slot_num: i32,
+    item: Option<Item>,
+    taros: u32,
+) {
+    match config_get().general.protocol.get() {
+        FFProtocol::v0104 => client.send_packet(
+            P_FE2CL_REP_PC_WARP_USE_NPC_SUCC,
+            &v0104::sP_FE2CL_REP_PC_WARP_USE_NPC_SUCC {
+                iX: pos.x,
+                iY: pos.y,
+                iZ: pos.z,
+                eIL: location,
+                iItemSlotNum: item_slot_num,
+                Item: item.into_proto(),
+                iCandy: taros as i32,
+            },
+        ),
+        FFProtocol::v1013 => client.send_packet(
+            P_FE2CL_REP_PC_WARP_USE_NPC_SUCC,
+            &v1013::sP_FE2CL_REP_PC_WARP_USE_NPC_SUCC {
+                iX: pos.x,
+                iY: pos.y,
+                iZ: pos.z,
+                eIL: location,
+                iItemSlotNum: item_slot_num,
+                Item: item.into_proto(),
+                iCandy: taros as i32,
+            },
+        ),
+    }
+}
+
+pub fn push_item_reward(pkt: &mut PacketBuilder, reward: RewardItem) {
+    match config_get().general.protocol.get() {
+        FFProtocol::v0104 => {
+            let reward: v0104::sItemReward = reward.into_proto();
+            pkt.push(&reward);
+        }
+        FFProtocol::v1013 => {
+            let reward: v1013::sItemReward = reward.into_proto();
+            pkt.push(&reward);
+        }
+    }
+}
+
+pub fn open_nano_capsule(
+    client: &FFClient,
+    player: &mut Player,
+    nano_id: i16,
+    slot_num: i32,
+) -> FFResult<()> {
+    // the capsule is already gone from the slot, so an empty reward clears it clientside
+    let mut reward_pkt =
+        PacketBuilder::new(P_FE2CL_REP_REWARD_ITEM).with(&sP_FE2CL_REP_REWARD_ITEM {
+            m_iCandy: player.get_taros() as i32,
+            m_iFusionMatter: player.get_fusion_matter() as i32,
+            m_iBatteryN: player.get_nano_potions() as i32,
+            m_iBatteryW: player.get_weapon_boosts() as i32,
+            iItemCnt: 1,
+            iFatigue: 100,
+            iFatigue_Level: 1,
+            iNPC_TypeID: unused!(),
+            iTaskID: unused!(),
+        });
+
+    push_item_reward(
+        &mut reward_pkt,
+        RewardItem::Normal {
+            item: None,
+            slot_num: slot_num as usize,
+        },
+    );
+    client.send_payload(reward_pkt.build()?);
+
+    let resp = sP_FE2CL_REP_ITEM_CHEST_OPEN_SUCC { iSlotNum: slot_num };
+    client.send_packet(P_FE2CL_REP_ITEM_CHEST_OPEN_SUCC, &resp);
+
+    if player.get_nano(nano_id).is_some() {
+        log_if_failed(send_announcement(
+            client,
+            "You have already acquired this nano!",
+            None,
+        ));
+        return Ok(());
+    }
+
+    let nano = player.unlock_nano(nano_id)?.clone();
+    send_nano_create_succ(
+        client,
+        player.get_fusion_matter(),
+        None,
+        None,
+        Some(&nano),
+        player.get_level(),
+    );
+    Ok(())
+}
 
 pub fn broadcast_state(pc_id: i32, player_sbf: i8, state: &mut ShardServerState) {
     let bcast = sP_FE2CL_PC_STATE_CHANGE {
@@ -154,11 +312,31 @@ pub fn remove_group_member(
 }
 
 pub fn send_system_message(client: &FFClient, msg: &str) -> FFResult<()> {
-    let resp = sP_FE2CL_PC_MOTD_LOGIN {
+    let pkt = sP_FE2CL_PC_MOTD_LOGIN {
         iType: unused!(),
         szSystemMsg: util::encode_utf16(msg)?,
     };
-    client.send_packet(P_FE2CL_PC_MOTD_LOGIN, &resp);
+
+    client.send_packet(P_FE2CL_PC_MOTD_LOGIN, &pkt);
+    Ok(())
+}
+
+pub fn send_announcement(
+    client: &FFClient,
+    msg: &str,
+    duration_secs: Option<usize>,
+) -> FFResult<()> {
+    let duration = duration_secs
+        .map(|secs| secs as i32)
+        .unwrap_or(MSG_BOX_DURATION_DEFAULT);
+
+    let pkt = sP_FE2CL_ANNOUNCE_MSG {
+        iAnnounceType: unused!(),
+        iDuringTime: duration,
+        szAnnounceMsg: util::encode_utf16(msg)?,
+    };
+
+    client.send_packet(P_FE2CL_ANNOUNCE_MSG, &pkt);
     Ok(())
 }
 
@@ -217,15 +395,10 @@ pub fn give_defeat_rewards(player: &mut Player, defeated_type: i32, rng: &mut Th
                 let qitem_slot = player
                     .set_quest_item_count(qitem_id, new_qitem_count)
                     .unwrap();
-                let qitem_drop = sItemReward {
-                    sItem: sItemBase {
-                        iType: ItemType::Quest as i16,
-                        iID: qitem_id,
-                        iOpt: new_qitem_count as i32,
-                        iTimeLimit: unused!(),
-                    },
-                    eIL: ItemLocation::QInven as i32,
-                    iSlotNum: qitem_slot as i32,
+                let qitem_drop = RewardItem::Quest {
+                    id: qitem_id,
+                    count: new_qitem_count,
+                    slot_num: qitem_slot,
                 };
                 if active_task_id == *task_id {
                     // active task rewards should show up first
@@ -259,11 +432,12 @@ pub fn give_defeat_rewards(player: &mut Player, defeated_type: i32, rng: &mut Th
                     player
                         .set_item(ItemLocation::Inven, slot, Some(item))
                         .unwrap();
-                    let item_reward = sItemReward {
-                        sItem: Some(item).into_proto(),
-                        eIL: ItemLocation::Inven as i32,
-                        iSlotNum: slot as i32,
+
+                    let item_reward = RewardItem::Normal {
+                        item: Some(item),
+                        slot_num: slot,
                     };
+
                     item_rewards.push(item_reward);
                 }
             }
@@ -287,7 +461,7 @@ pub fn give_defeat_rewards(player: &mut Player, defeated_type: i32, rng: &mut Th
         });
 
     for item in &item_rewards {
-        reward_pkt.push(item);
+        push_item_reward(&mut reward_pkt, *item);
     }
 
     if let Some(reward_pkt) = log_if_failed(reward_pkt.build()) {

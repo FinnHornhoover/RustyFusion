@@ -55,7 +55,7 @@ RustyFusion is an open-source server emulator for Cartoon Network's MMO Fusionfa
     - [x] Buddy chat [(thanks **lwcasgc**!)](https://github.com/yungcomputerchair/RustyFusion/pull/11)
     - [x] Buddy warping [(thanks **lwcasgc**!)](https://github.com/yungcomputerchair/RustyFusion/pull/12)
     - [ ] Emails
-    - [ ] Blocking
+    - [ ] **Blocking**
   - [x] Groups
     - [x] Framework +
     - [x] Group chat
@@ -113,12 +113,11 @@ RustyFusion is an open-source server emulator for Cartoon Network's MMO Fusionfa
 - [x] Time machine
 - [ ] Fuse boss fight
 - [x] Scripting API *(bonus)*
-- [ ] "Academy" (build 1013) support (currently, only build 104 is supported)
-  - [ ] Struct support
-  - [ ] Patching framework
-  - [ ] Dash skill
-  - [ ] Nano capsules
-  - [ ] Code redemption
+- [x] "Academy" (build 1013) support (currently, only build 104 is supported)
+  - [x] Struct support
+  - [x] Patching framework
+  - [x] Nano capsules
+  - [x] Code redemption
 
 ### Known Issues
 - The AI script for mob pack followers currently errors out.

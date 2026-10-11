@@ -3,7 +3,7 @@ use std::{cmp::min, time::SystemTime};
 use crate::{
     defines::*,
     entity::RewardData,
-    enums::{ItemType, RewardCategory, RewardType},
+    enums::{ItemLocation, ItemType, RewardCategory, RewardType},
     error::{FFError, FFResult},
     net::packet::*,
     tabledata::tdata_get,
@@ -94,9 +94,73 @@ impl Item {
         Ok(())
     }
 }
-impl TryFromProto<sItemBase> for Option<Item> {
+
+#[derive(Debug, Copy, Clone)]
+pub enum RewardItem {
+    Normal {
+        item: Option<Item>,
+        slot_num: usize,
+    },
+    Quest {
+        id: i16,
+        count: usize,
+        slot_num: usize,
+    },
+}
+impl RewardItem {
+    fn location(&self) -> ItemLocation {
+        match self {
+            Self::Normal { .. } => ItemLocation::Inven,
+            Self::Quest { .. } => ItemLocation::QInven,
+        }
+    }
+
+    fn slot_num(&self) -> usize {
+        match self {
+            Self::Normal { slot_num, .. } | Self::Quest { slot_num, .. } => *slot_num,
+        }
+    }
+}
+impl FromProto<RewardItem> for v0104::sItemReward {
+    fn from_proto(reward: RewardItem) -> Self {
+        Self {
+            sItem: match reward {
+                RewardItem::Normal { item, .. } => item.into_proto(),
+                RewardItem::Quest { id, count, .. } => v0104::sItemBase {
+                    iType: ItemType::Quest as i16,
+                    iID: id,
+                    iOpt: count as i32,
+                    iTimeLimit: unused!(),
+                },
+            },
+            eIL: reward.location() as i32,
+            iSlotNum: reward.slot_num() as i32,
+        }
+    }
+}
+impl FromProto<RewardItem> for v1013::sItemReward {
+    fn from_proto(reward: RewardItem) -> Self {
+        Self {
+            sItem: match reward {
+                RewardItem::Normal { item, .. } => item.into_proto(),
+                RewardItem::Quest { id, count, .. } => v1013::sItemBase {
+                    iType: ItemType::Quest as i16,
+                    iID: id,
+                    iOpt: count as i32,
+                    iTimeLimit: unused!(),
+                    iSerial: 0,
+                },
+            },
+            eIL: reward.location() as i32,
+            iSlotNum: reward.slot_num() as i32,
+        }
+    }
+}
+
+// 104
+impl TryFromProto<v0104::sItemBase> for Option<Item> {
     type Error = FFError;
-    fn try_from_proto(value: sItemBase) -> FFResult<Self> {
+    fn try_from_proto(value: v0104::sItemBase) -> FFResult<Self> {
         if value.iID == 0 || value.iOpt == 0 {
             Ok(None)
         } else {
@@ -121,7 +185,7 @@ impl TryFromProto<sItemBase> for Option<Item> {
         }
     }
 }
-impl FromProto<Option<Item>> for sItemBase {
+impl FromProto<Option<Item>> for v0104::sItemBase {
     fn from_proto(value: Option<Item>) -> Self {
         if let Some(value) = value {
             Self {
@@ -132,6 +196,53 @@ impl FromProto<Option<Item>> for sItemBase {
                     Some(time) => util::get_timestamp_sec(time) as i32,
                     None => 0,
                 },
+            }
+        } else {
+            Self::default()
+        }
+    }
+}
+
+// Academy
+impl TryFromProto<v1013::sItemBase> for Option<Item> {
+    type Error = FFError;
+    fn try_from_proto(value: v1013::sItemBase) -> FFResult<Self> {
+        if value.iID == 0 || value.iOpt == 0 {
+            Ok(None)
+        } else {
+            Ok(Some(Item {
+                ty: value.iType.try_into()?,
+                id: value.iID,
+                appearance_id: {
+                    let id = (value.iOpt >> 16) as i16;
+                    if id == 0 {
+                        None
+                    } else {
+                        Some(id)
+                    }
+                },
+                quantity: value.iOpt as u16,
+                expiry_time: if value.iTimeLimit == 0 {
+                    None
+                } else {
+                    Some(util::get_systime_from_sec(value.iTimeLimit as u64))
+                },
+            }))
+        }
+    }
+}
+impl FromProto<Option<Item>> for v1013::sItemBase {
+    fn from_proto(value: Option<Item>) -> Self {
+        if let Some(value) = value {
+            Self {
+                iType: value.ty as i16,
+                iID: value.id,
+                iOpt: (value.quantity as i32) | ((value.appearance_id.unwrap_or(0) as i32) << 16),
+                iTimeLimit: match value.expiry_time {
+                    Some(time) => util::get_timestamp_sec(time) as i32,
+                    None => 0,
+                },
+                iSerial: 0,
             }
         } else {
             Self::default()
@@ -176,13 +287,13 @@ impl VendorData {
         self.items.push(item);
     }
 
-    pub fn as_arr(&self) -> FFResult<[sItemVendor; SIZEOF_VENDOR_TABLE_SLOT as usize]> {
+    pub fn as_arr_104(&self) -> FFResult<[v0104::sItemVendor; SIZEOF_VENDOR_TABLE_SLOT as usize]> {
         let mut vendor_item_structs = Vec::new();
         for item in &self.items {
-            vendor_item_structs.push(sItemVendor {
+            vendor_item_structs.push(v0104::sItemVendor {
                 iVendorID: self.vendor_id,
                 fBuyCost: tdata_get().get_item_stats(item.id, item.ty)?.buy_price as f32,
-                item: sItemBase {
+                item: v0104::sItemBase {
                     iType: item.ty as i16,
                     iID: item.id,
                     iOpt: 1,
@@ -193,10 +304,38 @@ impl VendorData {
         }
         vendor_item_structs.resize(
             SIZEOF_VENDOR_TABLE_SLOT as usize,
-            sItemVendor {
+            v0104::sItemVendor {
                 iVendorID: 0,
                 fBuyCost: 0.0,
-                item: sItemBase::default(),
+                item: v0104::sItemBase::default(),
+                iSortNum: 0,
+            },
+        );
+        Ok(vendor_item_structs.try_into().unwrap())
+    }
+
+    pub fn as_arr_1013(&self) -> FFResult<[v1013::sItemVendor; SIZEOF_VENDOR_TABLE_SLOT as usize]> {
+        let mut vendor_item_structs = Vec::new();
+        for item in &self.items {
+            vendor_item_structs.push(v1013::sItemVendor {
+                iVendorID: self.vendor_id,
+                fBuyCost: tdata_get().get_item_stats(item.id, item.ty)?.buy_price as f32,
+                item: v1013::sItemBase {
+                    iType: item.ty as i16,
+                    iID: item.id,
+                    iOpt: 1,
+                    iTimeLimit: 0,
+                    iSerial: 0,
+                },
+                iSortNum: item.sort_number,
+            });
+        }
+        vendor_item_structs.resize(
+            SIZEOF_VENDOR_TABLE_SLOT as usize,
+            v1013::sItemVendor {
+                iVendorID: 0,
+                fBuyCost: 0.0,
+                item: v1013::sItemBase::default(),
                 iSortNum: 0,
             },
         );
