@@ -37,6 +37,10 @@ impl Item {
         tdata_get().get_item_stats(self.id, self.ty)
     }
 
+    pub fn has_expired(&self, now: SystemTime) -> bool {
+        self.expiry_time.is_some_and(|expiry| expiry < now)
+    }
+
     pub fn get_expiry_time(&self) -> Option<SystemTime> {
         self.expiry_time
     }
