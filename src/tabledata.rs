@@ -316,6 +316,7 @@ struct DropData {
     item_refs: HashMap<i32, ItemReference>,
     nano_capsules: HashMap<i16, i16>,
     code_items: HashMap<String, Vec<Item>>,
+    racing: HashMap<i32, crate::racing::RaceInfo>,
 }
 
 struct PathData {
@@ -329,7 +330,6 @@ pub struct TableData {
     world_name_data: WorldNameDataContainer,
     npcs: Vec<NPCSpawnData>,
     drop_data: DropData,
-    racing: HashMap<i32, crate::racing::RaceInfo>,
     path_data: PathData,
     egg_data: EggData,
 }
@@ -347,7 +347,6 @@ impl TableData {
                 .map_err(|e| format!("Error loading world name data: {}", e))?,
             npcs: load_npcs().map_err(|e| format!("Error loading NPC data: {}", e))?,
             drop_data: load_drop_data().map_err(|e| format!("Error loading drop data: {}", e))?,
-            racing: crate::racing::load_races(&load_json("drops.json")?)?,
             path_data: load_path_data().map_err(|e| format!("Error loading path data: {}", e))?,
             egg_data: load_egg_data().map_err(|e| format!("Error loading egg data: {}", e))?,
         })
@@ -358,7 +357,7 @@ impl TableData {
             .get_map_data(map_num)?
             .ep_id
             .ok_or_else(|| FFError::build(Severity::Warning, "Map has no race".into()))?;
-        self.racing.get(&(ep_id as i32)).ok_or_else(|| {
+        self.drop_data.racing.get(&(ep_id as i32)).ok_or_else(|| {
             FFError::build(
                 Severity::Warning,
                 format!("No racing data for EP {}", ep_id),
@@ -2336,6 +2335,7 @@ fn load_drop_data() -> Result<DropData, String> {
         item_refs,
         nano_capsules,
         code_items,
+        racing: crate::racing::load_races(&drop_root)?,
     })
 }
 

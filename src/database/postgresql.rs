@@ -110,7 +110,7 @@ impl PostgresDatabase {
 
         // Add racing storage to existing databases as well as new ones.
         Self::exec(&mut db_client, "ensure_race_rankings", &[]).await?;
-        // Upgrade databases created by earlier versions of this racing port.
+        // Add cascading character deletion to existing racing tables.
         let has_cascade: bool = db_client.query_one(
             "SELECT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid = 'racerankings'::regclass
              AND confrelid = 'players'::regclass AND contype = 'f' AND confdeltype = 'c')",

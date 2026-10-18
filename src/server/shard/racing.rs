@@ -86,8 +86,7 @@ pub fn get_ring(pkt: Packet, client: &FFClient, state: &mut ShardServerState) ->
 pub fn cancel(client: &FFClient, state: &mut ShardServerState) -> FFResult<()> {
     let pc_id = client.get_player_id()?;
     let player = state.get_player_mut(pc_id)?;
-    // An accepted finish already owns the race, just as the synchronous source
-    // would finish processing before handling a later cancel request.
+    // An accepted finish owns the race until its completion task returns.
     if player.race.as_ref().is_none_or(|race| race.finishing) {
         return Ok(());
     }
@@ -216,8 +215,7 @@ async fn finish(
     let best = match result {
         Ok(best) => best,
         Err(error) => {
-            // Like OpenFusion, a ranking database failure must not discard the
-            // completed race's gameplay reward.
+            // Ranking persistence failures must not discard the gameplay reward.
             log(
                 Severity::Warning,
                 &format!(

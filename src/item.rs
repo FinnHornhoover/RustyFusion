@@ -430,7 +430,7 @@ impl Reward {
         };
         self.fusion_matter =
             (self.fusion_matter as f64 * fm_rate * scavenge * level_effect * group_effect) as u32;
-        // OpenFusion applies the Nanocom booster after truncating the base reward.
+        // Apply the Nanocom booster after truncating the base reward.
         self.fusion_matter = (self.fusion_matter as f64
             * crate::boosters::factor(player, self.category, SystemTime::now()))
             as u32;

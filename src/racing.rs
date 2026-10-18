@@ -7,8 +7,7 @@ use std::{
     time::Instant,
 };
 
-// Like OpenFusion's getTime()/1000, truncate a shared monotonic clock before
-// recording either endpoint, rather than truncating each race's elapsed duration.
+// Truncate the shared monotonic clock before recording each race endpoint.
 static CLOCK: LazyLock<Instant> = LazyLock::new(Instant::now);
 
 pub fn get_time_seconds() -> u64 {

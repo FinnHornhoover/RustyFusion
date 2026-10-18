@@ -272,7 +272,7 @@ impl ShardServerState {
             if player.set_item(location, slot, None).is_err() {
                 continue;
             }
-            // Bank items are removed silently, as in OpenFusion.
+            // Bank items are removed silently (we don't reach here unless remove_bank_items is true).
             if location == ItemLocation::Bank {
                 continue;
             }

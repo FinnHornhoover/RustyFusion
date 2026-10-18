@@ -154,7 +154,7 @@ impl SqliteDatabase {
         // Add racing storage to existing databases as well as new ones.
         conn.interact(|conn| -> FFResult<()> {
             Self::exec(conn, "ensure_race_rankings", &[])?;
-            // Upgrade databases created by earlier versions of this racing port.
+            // Add cascading character deletion to existing racing tables.
             let has_cascade: bool = conn.query_row(
                 r#"SELECT EXISTS (SELECT 1 FROM pragma_foreign_key_list('RaceRankings')
                    WHERE "table" = 'Players' COLLATE NOCASE
