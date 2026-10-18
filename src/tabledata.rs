@@ -329,6 +329,7 @@ pub struct TableData {
     world_name_data: WorldNameDataContainer,
     npcs: Vec<NPCSpawnData>,
     drop_data: DropData,
+    racing: HashMap<i32, crate::racing::RaceInfo>,
     path_data: PathData,
     egg_data: EggData,
 }
@@ -346,8 +347,22 @@ impl TableData {
                 .map_err(|e| format!("Error loading world name data: {}", e))?,
             npcs: load_npcs().map_err(|e| format!("Error loading NPC data: {}", e))?,
             drop_data: load_drop_data().map_err(|e| format!("Error loading drop data: {}", e))?,
+            racing: crate::racing::load_races(&load_json("drops.json")?)?,
             path_data: load_path_data().map_err(|e| format!("Error loading path data: {}", e))?,
             egg_data: load_egg_data().map_err(|e| format!("Error loading egg data: {}", e))?,
+        })
+    }
+
+    pub fn get_race_info(&self, map_num: u32) -> FFResult<&crate::racing::RaceInfo> {
+        let ep_id = self
+            .get_map_data(map_num)?
+            .ep_id
+            .ok_or_else(|| FFError::build(Severity::Warning, "Map has no race".into()))?;
+        self.racing.get(&(ep_id as i32)).ok_or_else(|| {
+            FFError::build(
+                Severity::Warning,
+                format!("No racing data for EP {}", ep_id),
+            )
         })
     }
 

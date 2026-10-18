@@ -108,6 +108,18 @@ impl PostgresDatabase {
             .await?;
         }
 
+        // Add racing storage to existing databases as well as new ones.
+        Self::exec(&mut db_client, "ensure_race_rankings", &[]).await?;
+        // Upgrade databases created by earlier versions of this racing port.
+        let has_cascade: bool = db_client.query_one(
+            "SELECT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid = 'racerankings'::regclass
+             AND confrelid = 'players'::regclass AND contype = 'f' AND confdeltype = 'c')",
+            &[],
+        ).await?.get(0);
+        if !has_cascade {
+            Self::exec(&mut db_client, "migrations/race_rankings_foreign_key", &[]).await?;
+        }
+
         Ok(Self {
             pool,
             config: db_config,
@@ -549,6 +561,40 @@ impl PostgresDatabase {
 }
 #[async_trait]
 impl DbImpl for PostgresDatabase {
+    async fn post_race_ranking(&self, ranking: &crate::racing::RaceRanking) -> FFResult<()> {
+        let mut client = self.get_client().await?;
+        Self::exec(
+            &mut client,
+            "post_race_ranking",
+            &[
+                &ranking.player_uid,
+                &ranking.ep_id,
+                &ranking.score,
+                &ranking.pods,
+                &ranking.seconds,
+                &ranking.timestamp,
+            ],
+        )
+        .await?;
+        Ok(())
+    }
+    async fn get_top_race_ranking(
+        &self,
+        pc_uid: BigInt,
+        ep_id: Int,
+    ) -> FFResult<Option<crate::racing::RaceRanking>> {
+        let client = self.get_client().await?;
+        let rows = Self::query(&client, "get_top_race_ranking", &[&pc_uid, &ep_id]).await?;
+        Ok(rows.first().map(|row| crate::racing::RaceRanking {
+            player_uid: row.get("PlayerUID"),
+            ep_id: row.get("EPID"),
+            score: row.get("Score"),
+            pods: row.get("Pods"),
+            seconds: row.get("Seconds"),
+            timestamp: row.get("Timestamp"),
+        }))
+    }
+
     async fn get_db_version(&self) -> FFResult<Int> {
         let client = self.get_client().await?;
         let rows = Self::query(&client, "get_db_version", &[]).await?;

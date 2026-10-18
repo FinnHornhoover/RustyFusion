@@ -151,6 +151,25 @@ impl SqliteDatabase {
             .await??;
         }
 
+        // Add racing storage to existing databases as well as new ones.
+        conn.interact(|conn| -> FFResult<()> {
+            Self::exec(conn, "ensure_race_rankings", &[])?;
+            // Upgrade databases created by earlier versions of this racing port.
+            let has_cascade: bool = conn.query_row(
+                r#"SELECT EXISTS (SELECT 1 FROM pragma_foreign_key_list('RaceRankings')
+                   WHERE "table" = 'Players' COLLATE NOCASE
+                   AND "from" = 'PlayerUID' COLLATE NOCASE AND "to" = 'PlayerID' COLLATE NOCASE
+                   AND on_delete = 'CASCADE')"#,
+                [],
+                |row| row.get(0),
+            )?;
+            if !has_cascade {
+                Self::exec(conn, "migrations/race_rankings_foreign_key", &[])?;
+            }
+            Ok(())
+        })
+        .await??;
+
         Ok(Self { pool, path })
     }
 
@@ -576,6 +595,48 @@ impl SqliteDatabase {
 
 #[async_trait]
 impl DbImpl for SqliteDatabase {
+    async fn post_race_ranking(&self, ranking: &crate::racing::RaceRanking) -> FFResult<()> {
+        let conn = self.pool.get().await?;
+        let r = ranking.clone();
+        conn.interact(move |conn| -> FFResult<()> {
+            Self::exec(
+                conn,
+                "post_race_ranking",
+                &[
+                    &r.player_uid,
+                    &r.ep_id,
+                    &r.score,
+                    &r.pods,
+                    &r.seconds,
+                    &r.timestamp,
+                ],
+            )?;
+            Ok(())
+        })
+        .await?
+    }
+    async fn get_top_race_ranking(
+        &self,
+        pc_uid: BigInt,
+        ep_id: Int,
+    ) -> FFResult<Option<crate::racing::RaceRanking>> {
+        let conn = self.pool.get().await?;
+        conn.interact(
+            move |conn| -> FFResult<Option<crate::racing::RaceRanking>> {
+                let rows = Self::query(conn, "get_top_race_ranking", &[&pc_uid, &ep_id])?;
+                Ok(rows.first().map(|row| crate::racing::RaceRanking {
+                    player_uid: row.get("PlayerUID"),
+                    ep_id: row.get("EPID"),
+                    score: row.get("Score"),
+                    pods: row.get("Pods"),
+                    seconds: row.get("Seconds"),
+                    timestamp: row.get("Timestamp"),
+                }))
+            },
+        )
+        .await?
+    }
+
     async fn get_db_version(&self) -> FFResult<Int> {
         let conn = self.pool.get().await?;
         conn.interact(|conn| -> FFResult<Int> {

@@ -64,6 +64,7 @@ pub mod item;
 pub mod mission;
 pub mod nano;
 pub mod path;
+pub mod racing;
 pub mod scripting;
 pub mod skills;
 pub mod trade;

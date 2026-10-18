@@ -122,6 +122,9 @@ disable_group_reward_reduction = false # give each group member full Taros and F
 #: bool
 remove_expired_items_from_bank = false # otherwise retain them until withdrawal
 
+#: bool
+iz_race_score_capped = true # apply the configured infected-zone score cap
+
 #: String
 log_path = "shard.log" # path to log file, or blank for console logging only
 

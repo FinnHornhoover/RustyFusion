@@ -34,6 +34,7 @@ mod mission;
 mod nano;
 mod npc;
 mod pc;
+mod racing;
 mod trade;
 mod transport;
 
@@ -55,6 +56,10 @@ pub fn handle_packet<'a>(
 
         if pkt_id == P_CL2FE_REQ_PC_EXIT {
             return pc::pc_exit(&clients, state).await;
+        }
+
+        if pkt_id == P_CL2FE_REQ_EP_RACE_END {
+            return racing::end(pkt, clients.get_sender(), state).await;
         }
 
         let mut state = state.lock().await;
@@ -144,6 +149,10 @@ pub fn handle_packet<'a>(
             P_CL2FE_REQ_SHINY_SUMMON => gm::gm_shiny_summon(pkt, &clients, state),
             //
             P_CL2FE_REQ_NPC_INTERACTION => npc::npc_interaction(pkt, clients.get_sender(), state),
+            P_CL2FE_REQ_EP_RACE_START => racing::start(pkt, clients.get_sender(), state),
+            P_CL2FE_REQ_EP_GET_RING => racing::get_ring(pkt, clients.get_sender(), state),
+            P_CL2FE_REQ_EP_RACE_CANCEL => racing::cancel(clients.get_sender(), state),
+            P_CL2FE_REQ_EP_RACE_END => unreachable!(),
             P_CL2FE_REQ_BARKER => npc::npc_bark(pkt, clients.get_sender(), state),
             //
             P_CL2FE_REQ_SEND_FREECHAT_MESSAGE => {

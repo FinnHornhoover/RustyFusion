@@ -421,7 +421,7 @@ impl Reward {
         } else {
             1.0
         };
-        self.taros = (self.taros as f64 * taro_rate as f64 * bonus * group_effect) as u32;
+        self.taros = (self.taros as f64 * taro_rate * bonus * group_effect) as u32;
 
         let group_effect = if group_reduction {
             group_fm_factor(group_size)
@@ -429,8 +429,7 @@ impl Reward {
             1.0
         };
         self.fusion_matter =
-            (self.fusion_matter as f64 * fm_rate as f64 * scavenge * level_effect * group_effect)
-                as u32;
+            (self.fusion_matter as f64 * fm_rate * scavenge * level_effect * group_effect) as u32;
         // OpenFusion applies the Nanocom booster after truncating the base reward.
         self.fusion_matter = (self.fusion_matter as f64
             * crate::boosters::factor(player, self.category, SystemTime::now()))
@@ -443,10 +442,10 @@ impl Reward {
         let taros_factor = reward_data.get_reward_rate(RewardType::Taros, category);
         let fm_factor = reward_data.get_reward_rate(RewardType::FusionMatter, category);
         if let Ok(factor) = taros_factor {
-            self.taros = (self.taros as f32 * factor) as u32;
+            self.taros = (self.taros as f64 * factor) as u32;
         }
         if let Ok(factor) = fm_factor {
-            self.fusion_matter = (self.fusion_matter as f32 * factor) as u32;
+            self.fusion_matter = (self.fusion_matter as f64 * factor) as u32;
         }
         self
     }
